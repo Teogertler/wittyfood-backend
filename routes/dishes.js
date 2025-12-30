@@ -3,6 +3,7 @@ const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/auth');
 const { upload, handleUploadError } = require('../middleware/upload');
+const { rateLimitImageAnalysis, rateLimitTextAnalysis, getUserUsageStats } = require('../middleware/rateLimit');
 const { analyzeFoodImage, analyzeFoodDescription } = require('../config/aiService');
 const { findMatchingDishes, filterByDistance } = require('../utils/dishMatching');
 
@@ -13,9 +14,30 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+// GET /api/dishes/usage - Get user's API usage stats
+router.get('/usage', authMiddleware, async (req, res) => {
+  try {
+    const userTier = req.user.subscription_tier || 'free';
+    const stats = await getUserUsageStats(req.user.id, userTier);
+    
+    res.json({
+      message: 'Usage stats retrieved successfully',
+      usage: stats
+    });
+  } catch (error) {
+    console.error('Error getting usage stats:', error);
+    res.status(500).json({
+      error: 'Failed to get usage stats',
+      details: error.message
+    });
+  }
+});
+
 // POST /api/dishes/analyze-image - Analyze food image with AI
+// Rate limited to control AI costs
 router.post('/analyze-image', 
   authMiddleware,
+  rateLimitImageAnalysis,  // Apply rate limiting
   upload.single('image'),
   handleUploadError,
   async (req, res) => {
@@ -35,7 +57,12 @@ router.post('/analyze-image',
 
       res.json({
         message: 'Image analyzed successfully',
-        dish: dishInfo
+        dish: dishInfo,
+        usage: req.usageInfo ? {
+          scansRemaining: req.usageInfo.remaining,
+          scansUsed: req.usageInfo.current + 1,
+          dailyLimit: req.usageInfo.limit
+        } : undefined
       });
 
     } catch (error) {
@@ -49,7 +76,8 @@ router.post('/analyze-image',
 );
 
 // POST /api/dishes/analyze-text - Analyze food description with AI
-router.post('/analyze-text', authMiddleware, async (req, res) => {
+// Rate limited to control AI costs
+router.post('/analyze-text', authMiddleware, rateLimitTextAnalysis, async (req, res) => {
   try {
     const { description } = req.body;
 
@@ -64,7 +92,12 @@ router.post('/analyze-text', authMiddleware, async (req, res) => {
 
     res.json({
       message: 'Description analyzed successfully',
-      dish: dishInfo
+      dish: dishInfo,
+      usage: req.usageInfo ? {
+        analysesRemaining: req.usageInfo.remaining,
+        analysesUsed: req.usageInfo.current + 1,
+        dailyLimit: req.usageInfo.limit
+      } : undefined
     });
 
   } catch (error) {
