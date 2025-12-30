@@ -88,6 +88,7 @@ router.get('/favorites', authMiddleware, async (req, res) => {
       .from('favorites')
       .select(`
         id,
+        dish_id,
         created_at,
         dish:restaurant_dishes(
           *,
@@ -230,6 +231,80 @@ router.get('/favorites/check/:dishId', authMiddleware, async (req, res) => {
     // If no favorite found, just return false
     res.json({
       isFavorite: false
+    });
+  }
+});
+
+// POST /api/users/favorites/toggle/:dishId - Toggle dish favorite (add or remove)
+router.post('/favorites/toggle/:dishId', authMiddleware, async (req, res) => {
+  try {
+    const { dishId } = req.params;
+
+    // Check if dish exists
+    const { data: dish, error: dishError } = await supabase
+      .from('restaurant_dishes')
+      .select('id')
+      .eq('id', dishId)
+      .single();
+
+    if (dishError || !dish) {
+      return res.status(404).json({
+        error: 'Dish not found'
+      });
+    }
+
+    // Check if already favorited
+    const { data: existingFavorite } = await supabase
+      .from('favorites')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .eq('dish_id', dishId)
+      .single();
+
+    if (existingFavorite) {
+      // Remove from favorites
+      const { error: deleteError } = await supabase
+        .from('favorites')
+        .delete()
+        .eq('user_id', req.user.id)
+        .eq('dish_id', dishId);
+
+      if (deleteError) {
+        throw new Error('Failed to remove favorite');
+      }
+
+      return res.json({
+        message: 'Dish removed from favorites',
+        isFavorite: false
+      });
+    } else {
+      // Add to favorites
+      const { data: favorite, error: insertError } = await supabase
+        .from('favorites')
+        .insert([
+          {
+            user_id: req.user.id,
+            dish_id: dishId
+          }
+        ])
+        .select()
+        .single();
+
+      if (insertError) {
+        throw new Error('Failed to add favorite');
+      }
+
+      return res.status(201).json({
+        message: 'Dish added to favorites',
+        isFavorite: true,
+        favorite
+      });
+    }
+
+  } catch (error) {
+    console.error('Toggle favorite error:', error);
+    res.status(500).json({
+      error: 'Failed to toggle favorite'
     });
   }
 });
