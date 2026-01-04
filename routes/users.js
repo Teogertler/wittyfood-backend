@@ -609,4 +609,181 @@ router.post('/favorites/toggle/:dishId', authMiddleware, async (req, res) => {
   }
 });
 
+// ============================================
+// ACCOUNT DELETION ROUTES
+// ============================================
+
+// DELETE /api/users/account - Permanently delete user account and all data
+router.delete('/account', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { confirmation } = req.body;
+
+    // Require explicit confirmation
+    if (confirmation !== 'DELETE_MY_ACCOUNT') {
+      return res.status(400).json({
+        error: 'Please confirm account deletion by sending confirmation: "DELETE_MY_ACCOUNT"'
+      });
+    }
+
+    console.log(`🗑️ Starting account deletion for user: ${userId}`);
+
+    // Track deletion results
+    const deletionResults = {
+      favorites: 0,
+      searchHistory: 0,
+      userSettings: 0,
+      apiUsage: 0,
+      user: false
+    };
+
+    // 1. Delete user's favorites
+    const { data: deletedFavorites, error: favoritesError } = await supabase
+      .from('favorites')
+      .delete()
+      .eq('user_id', userId)
+      .select();
+
+    if (favoritesError) {
+      console.error('Error deleting favorites:', favoritesError);
+    } else {
+      deletionResults.favorites = deletedFavorites?.length || 0;
+      console.log(`✓ Deleted ${deletionResults.favorites} favorites`);
+    }
+
+    // 2. Delete user's search history
+    const { data: deletedHistory, error: historyError } = await supabase
+      .from('search_history')
+      .delete()
+      .eq('user_id', userId)
+      .select();
+
+    if (historyError) {
+      console.error('Error deleting search history:', historyError);
+    } else {
+      deletionResults.searchHistory = deletedHistory?.length || 0;
+      console.log(`✓ Deleted ${deletionResults.searchHistory} search history items`);
+    }
+
+    // 3. Delete user's settings
+    const { data: deletedSettings, error: settingsError } = await supabase
+      .from('user_settings')
+      .delete()
+      .eq('user_id', userId)
+      .select();
+
+    if (settingsError && settingsError.code !== 'PGRST116') {
+      console.error('Error deleting user settings:', settingsError);
+    } else {
+      deletionResults.userSettings = deletedSettings?.length || 0;
+      console.log(`✓ Deleted user settings`);
+    }
+
+    // 4. Delete user's API usage records
+    const { data: deletedUsage, error: usageError } = await supabase
+      .from('api_usage')
+      .delete()
+      .eq('user_id', userId)
+      .select();
+
+    if (usageError && usageError.code !== 'PGRST116') {
+      console.error('Error deleting API usage:', usageError);
+    } else {
+      deletionResults.apiUsage = deletedUsage?.length || 0;
+      console.log(`✓ Deleted ${deletionResults.apiUsage} API usage records`);
+    }
+
+    // 5. Finally, delete the user record itself
+    const { data: deletedUser, error: userError } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', userId)
+      .select();
+
+    if (userError) {
+      console.error('Error deleting user:', userError);
+      return res.status(500).json({
+        error: 'Failed to delete user account',
+        details: userError.message,
+        partialDeletion: deletionResults
+      });
+    }
+
+    if (!deletedUser || deletedUser.length === 0) {
+      return res.status(404).json({
+        error: 'User not found'
+      });
+    }
+
+    deletionResults.user = true;
+    console.log(`✅ Account deletion complete for user: ${userId}`);
+
+    res.json({
+      message: 'Account successfully deleted',
+      deletionSummary: {
+        favoritesDeleted: deletionResults.favorites,
+        searchHistoryDeleted: deletionResults.searchHistory,
+        settingsDeleted: deletionResults.userSettings > 0,
+        apiUsageDeleted: deletionResults.apiUsage,
+        accountDeleted: deletionResults.user
+      }
+    });
+
+  } catch (error) {
+    console.error('Account deletion error:', error);
+    res.status(500).json({
+      error: 'Failed to delete account',
+      details: error.message
+    });
+  }
+});
+
+// GET /api/users/account/data-summary - Get summary of user's data (for deletion preview)
+router.get('/account/data-summary', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Count favorites
+    const { count: favoritesCount } = await supabase
+      .from('favorites')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    // Count search history
+    const { count: historyCount } = await supabase
+      .from('search_history')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    // Check if settings exist
+    const { data: settings } = await supabase
+      .from('user_settings')
+      .select('id')
+      .eq('user_id', userId)
+      .single();
+
+    // Count API usage
+    const { count: usageCount } = await supabase
+      .from('api_usage')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    res.json({
+      dataSummary: {
+        favorites: favoritesCount || 0,
+        searchHistory: historyCount || 0,
+        hasSettings: !!settings,
+        apiUsageRecords: usageCount || 0,
+        accountCreated: req.user.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Data summary error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch data summary'
+    });
+  }
+});
+
 module.exports = router;
